@@ -1,0 +1,61 @@
+name: Agregar personaje desde Issue
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+  contents: write
+
+jobs:
+  add-character:
+    runs-on: ubuntu-latest
+    # Opcional: quitar este 'if' si quieres automatización 100% sin moderación
+    if: contains(github.event.issue.labels.*.name, 'approved')
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extraer y validar JSON del issue
+        id: extract
+        run: |
+          BODY="${{ github.event.issue.body }}"
+          echo "$BODY" > issue_body.md
+          NEW_CHAR=$(awk '/```json/{flag=1;next}/```/{flag=0}flag' issue_body.md)
+          echo "$NEW_CHAR" | jq empty || { echo "JSON inválido"; exit 1; }
+          echo "$NEW_CHAR" > new_char.json
+
+      - name: Insertar en chars.json
+        run: |
+          node -e "
+            const fs = require('fs');
+            const chars = JSON.parse(fs.readFileSync('chars.json', 'utf8'));
+            const newChar = JSON.parse(fs.readFileSync('new_char.json', 'utf8'));
+            
+            if (!newChar.name || !newChar.systemPrompt || !newChar.avatar) {
+              console.error('Faltan campos obligatorios'); process.exit(1);
+            }
+            if (chars.some(c => c.id === newChar.id)) {
+              newChar.id = newChar.id + '_' + Date.now();
+            }
+            chars.push(newChar);
+            fs.writeFileSync('chars.json', JSON.stringify(chars, null, 2));
+          "
+
+      - name: Commit y push
+        run: |
+          git config user.name "ventarys-bot"
+          git config user.email "bot@ventarys.net"
+          git add chars.json
+          git commit -m "➕ Personaje agregado: $(jq -r '.name' new_char.json) (Issue #${{ github.event.issue.number }})"
+          git push
+
+      - name: Cerrar issue
+        run: |
+          gh issue close ${{ github.event.issue.number }} \
+            --comment "✅ Personaje agregado automáticamente. Disponible en la app." \
+            --repo ${{ github.repository }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
